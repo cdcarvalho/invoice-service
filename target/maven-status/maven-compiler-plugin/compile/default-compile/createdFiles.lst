@@ -1,0 +1,8 @@
+com/backing/invoice/domain/Conta.class
+com/backing/invoice/repository/FaturaRepository.class
+com/backing/invoice/repository/LancamentoRepository.class
+com/backing/invoice/InvoiceApplication.class
+com/backing/invoice/batch/BatchConfig.class
+com/backing/invoice/domain/Lancamento.class
+com/backing/invoice/repository/ContaRepository.class
+com/backing/invoice/domain/Fatura.class
