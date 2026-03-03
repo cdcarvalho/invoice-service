@@ -8,7 +8,7 @@ INSERT INTO LANCAMENTOS (conta_id, valor, data_lancamento)
 SELECT 
     c.id,
     (random() * 500 + 10)::DECIMAL(19, 2),
-    CURRENT_TIMESTAMP - (random() * 30 || ' days')::interval
+    CURRENT_TIMESTAMP - (floor(random() * 30) || ' days')::interval
 FROM (
     SELECT id, (random() * 60 + 1)::INT AS qtd_lancamentos 
     FROM CONTAS 

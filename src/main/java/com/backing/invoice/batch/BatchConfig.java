@@ -1,21 +1,28 @@
 package com.backing.invoice.batch;
 
 import com.backing.invoice.domain.Conta;
+import com.backing.invoice.domain.BatchPartitionQueue;
 import com.backing.invoice.domain.Fatura;
 import com.backing.invoice.repository.ContaRepository;
 import com.backing.invoice.repository.FaturaRepository;
 import com.backing.invoice.repository.LancamentoRepository;
+import java.util.Optional;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.StepScope;
+import org.springframework.batch.core.job.flow.FlowExecutionStatus;
+import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.partition.support.Partitioner;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.ItemWriter;
-import org.springframework.batch.item.database.JdbcCursorItemReader;
-import org.springframework.batch.item.database.builder.JdbcCursorItemReaderBuilder;
+import org.springframework.batch.item.database.JdbcPagingItemReader;
+import org.springframework.batch.item.database.PagingQueryProvider;
+import org.springframework.batch.item.database.builder.JdbcPagingItemReaderBuilder;
+import org.springframework.batch.item.database.support.SqlPagingQueryProviderFactoryBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -40,44 +47,99 @@ public class BatchConfig {
     private static final Logger log = LoggerFactory.getLogger(BatchConfig.class);
 
     @Bean
-    public Job invoiceJob(JobRepository jobRepository, Step masterStep) {
-        return new JobBuilder("invoiceJob", jobRepository)
-                .start(masterStep)
+    public Job masterJob(JobRepository jobRepository, Step createPartitionsStep) {
+        return new JobBuilder("masterJob", jobRepository)
+                .start(createPartitionsStep)
                 .build();
     }
 
     @Bean
-    public Step masterStep(JobRepository jobRepository, Step workerStep, Partitioner partitioner) {
-        return new StepBuilder("masterStep", jobRepository)
-                .partitioner(workerStep.getName(), partitioner)
-                .step(workerStep)
-                .gridSize(10)
-                .taskExecutor(taskExecutor())
+    public Step createPartitionsStep(JobRepository jobRepository, PlatformTransactionManager transactionManager,
+                                     PartitionQueueService partitionQueueService) {
+        return new StepBuilder("createPartitionsStep", jobRepository)
+                .tasklet((contribution, chunkContext) -> {
+                    long jobExecutionId = chunkContext.getStepContext().getStepExecution().getJobExecutionId();
+                    log.info("MASTER: Criando partições para Job Execution ID: {}", jobExecutionId);
+                    int gridSize = 10; // Definindo o número de partições
+                    partitionQueueService.createPartitions(jobExecutionId, gridSize);
+                    log.info("MASTER: {} partições criadas com sucesso.", gridSize);
+                    return org.springframework.batch.repeat.RepeatStatus.FINISHED;
+                }, transactionManager)
                 .build();
     }
 
     @Bean
-    public Partitioner partitioner() {
-        return gridSize -> {
-            Map<String, ExecutionContext> map = new HashMap<>();
-            for (int i = 0; i < gridSize; i++) {
-                ExecutionContext context = new ExecutionContext();
-                context.putInt("partitionId", i);
-                context.putInt("totalPartitions", gridSize);
-                map.put("partition" + i, context);
+    public Job workerJob(JobRepository jobRepository, JobExecutionDecider workDecider, Step findWorkStep, Step workerStep, Step successStep, Step failureStep) {
+        return new JobBuilder("workerJob", jobRepository)
+                .start(findWorkStep)
+                .next(workDecider)
+                    .on("WORK_FOUND").to(workerStep)
+                        .on("COMPLETED").to(successStep).next(findWorkStep) // Loop back after success
+                        .on("*").to(failureStep).next(findWorkStep)      // Loop back after failure
+                .from(workDecider)
+                    .on("NO_WORK").end()
+                .end()
+                .build();
+    }
+
+    @Bean
+    public JobExecutionDecider workDecider() {
+        return (jobExecution, stepExecution) -> {
+            boolean workFound = jobExecution.getExecutionContext().containsKey("partition.id");
+            if (workFound) {
+                return new FlowExecutionStatus("WORK_FOUND");
+            } else {
+                return new FlowExecutionStatus("NO_WORK");
             }
-            return map;
         };
     }
 
     @Bean
-    public TaskExecutor taskExecutor() {
-        return new SimpleAsyncTaskExecutor("spring_batch");
+    public Step findWorkStep(JobRepository jobRepository, PartitionQueueService partitionQueueService, PlatformTransactionManager transactionManager) {
+        return new StepBuilder("findWorkStep", jobRepository)
+                .tasklet((contribution, chunkContext) -> {
+                    Optional<BatchPartitionQueue> claimedPartitionOpt = partitionQueueService.claimPartition();
+                    if (claimedPartitionOpt.isPresent()) {
+                        BatchPartitionQueue partition = claimedPartitionOpt.get();
+                        log.info("WORKER: Partição {} (JobExecId={}) capturada.", partition.getPartitionId(), partition.getJobExecutionId());
+                        ExecutionContext jobContext = chunkContext.getStepContext().getStepExecution().getJobExecution().getExecutionContext();
+                        jobContext.put("partition.id", partition.getId());
+                        jobContext.put("partition.partitionId", partition.getPartitionId());
+                    } else {
+                        log.info("WORKER: Nenhuma partição disponível para processamento.");
+                    }
+                    return org.springframework.batch.repeat.RepeatStatus.FINISHED;
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step successStep(JobRepository jobRepository, PartitionQueueService partitionQueueService, PlatformTransactionManager transactionManager) {
+        return new StepBuilder("successStep", jobRepository)
+                .tasklet((contribution, chunkContext) -> {
+                    ExecutionContext jobContext = chunkContext.getStepContext().getStepExecution().getJobExecution().getExecutionContext();
+                    Long partitionId = jobContext.getLong("partition.id");
+                    partitionQueueService.updatePartitionStatus(partitionId, "COMPLETED");
+                    return org.springframework.batch.repeat.RepeatStatus.FINISHED;
+                }, transactionManager)
+                .build();
+    }
+
+    @Bean
+    public Step failureStep(JobRepository jobRepository, PartitionQueueService partitionQueueService, PlatformTransactionManager transactionManager) {
+        return new StepBuilder("failureStep", jobRepository)
+                .tasklet((contribution, chunkContext) -> {
+                    ExecutionContext jobContext = chunkContext.getStepContext().getStepExecution().getJobExecution().getExecutionContext();
+                    Long partitionId = jobContext.getLong("partition.id");
+                    partitionQueueService.updatePartitionStatus(partitionId, "FAILED");
+                    return org.springframework.batch.repeat.RepeatStatus.FINISHED;
+                }, transactionManager)
+                .build();
     }
 
     @Bean
     public Step workerStep(JobRepository jobRepository, PlatformTransactionManager transactionManager,
-                           JdbcCursorItemReader<Conta> reader, ItemProcessor<Conta, Fatura> processor,
+                           JdbcPagingItemReader<Conta> reader, ItemProcessor<Conta, Fatura> processor,
                            ItemWriter<Fatura> writer) {
         return new StepBuilder("workerStep", jobRepository)
                 .<Conta, Fatura>chunk(100, transactionManager)
@@ -89,15 +151,26 @@ public class BatchConfig {
 
     @Bean
     @StepScope
-    public JdbcCursorItemReader<Conta> reader(DataSource dataSource,
-                                              @Value("#{stepExecutionContext['partitionId']}") Integer partitionId,
-                                              @Value("#{stepExecutionContext['totalPartitions']}") Integer totalPartitions) {
+    public JdbcPagingItemReader<Conta> reader(DataSource dataSource,
+                                              @Value("#{jobExecutionContext['partition.partitionId']}") Integer partitionId,
+                                              @Value("#{jobExecutionContext['totalPartitions'] ?: 10}") Integer totalPartitions) throws Exception {
         log.info("Iniciando leitura para particao {}", partitionId);
         int today = LocalDate.now().getDayOfMonth();
-        return new JdbcCursorItemReaderBuilder<Conta>()
+
+        SqlPagingQueryProviderFactoryBean factory = new SqlPagingQueryProviderFactoryBean();
+        factory.setDataSource(dataSource);
+        factory.setSelectClause("SELECT id, status, data_fechamento");
+        factory.setFromClause("FROM CONTAS");
+        factory.setWhereClause("WHERE status = 'ABERTA' AND data_fechamento = " + today + " AND MOD(id, " + totalPartitions + ") = " + partitionId);
+        factory.setSortKey("id");
+
+        PagingQueryProvider queryProvider = factory.getObject();
+
+        return new JdbcPagingItemReaderBuilder<Conta>()
                 .name("contaReader")
                 .dataSource(dataSource)
-                .sql("SELECT id, status, data_fechamento FROM CONTAS WHERE status = 'ABERTA' AND data_fechamento = " + today + " AND MOD(id, " + totalPartitions + ") = " + partitionId + " ORDER BY id")
+                .queryProvider(queryProvider)
+                .pageSize(100) // Mesmo tamanho do chunk
                 .rowMapper((rs, rowNum) -> {
                     Conta c = new Conta();
                     c.setId(rs.getLong("id"));

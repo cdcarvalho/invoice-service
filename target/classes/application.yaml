@@ -14,7 +14,7 @@ spring:
     enabled: true
     baseline-on-migrate: true
   batch:
+    job:
+      enabled: false # Desativa a execução automática de jobs na inicialização
     jdbc:
       initialize-schema: always
-    job:
-      name: invoiceJob

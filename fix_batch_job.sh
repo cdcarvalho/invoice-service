@@ -1,3 +1,0 @@
-#!/bin/bash
-docker exec -i pg_invoice psql -U myuser -d invoice_db -c "UPDATE BATCH_JOB_EXECUTION SET STATUS='FAILED', END_TIME=CURRENT_TIMESTAMP, EXIT_CODE='FAILED' WHERE STATUS='STARTED';"
-docker exec -i pg_invoice psql -U myuser -d invoice_db -c "UPDATE BATCH_STEP_EXECUTION SET STATUS='FAILED', END_TIME=CURRENT_TIMESTAMP, EXIT_CODE='FAILED' WHERE STATUS='STARTED';"

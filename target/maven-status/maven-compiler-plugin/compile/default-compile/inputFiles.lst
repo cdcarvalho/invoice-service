@@ -2,7 +2,11 @@
 /home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/repository/FaturaRepository.java
 /home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/InvoiceApplication.java
 /home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/batch/BatchConfig.java
+/home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/scheduler/JobScheduler.java
 /home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/domain/Fatura.java
 /home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/domain/Lancamento.java
+/home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/repository/BatchPartitionQueueRepository.java
+/home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/domain/BatchPartitionQueue.java
+/home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/batch/PartitionQueueService.java
 /home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/repository/ContaRepository.java
 /home/cristian/projetos/finaya/invoice/src/main/java/com/backing/invoice/domain/Conta.java
